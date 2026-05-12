@@ -12,7 +12,7 @@
 import type { APIRoute } from "astro";
 
 import { createKyselyAdapter } from "@emdash-cms/auth/adapters/kysely";
-import { verifyPassword } from "@oslojs/crypto/bcrypt";
+import bcryptjs from "bcryptjs";
 
 export const prerender = false;
 
@@ -60,7 +60,7 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
 
     // Decode and verify password
     const storedHash = new TextDecoder().decode(passwordCred.publicKey);
-    const isValid = await verifyPassword(password, storedHash);
+    const isValid = await bcryptjs.compare(password, storedHash);
 
     if (!isValid) {
       return redirect("/_emdash/admin/login?error=invalid_credentials&message=Invalid email or password");

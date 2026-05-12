@@ -14,7 +14,7 @@ import type { APIRoute } from "astro";
 
 import { findOrCreateOAuthUser, Role } from "@emdash-cms/auth";
 import { createKyselyAdapter } from "@emdash-cms/auth/adapters/kysely";
-import { generateSessionId, passwordHash } from "@oslojs/crypto/bcrypt";
+import bcryptjs from "bcryptjs";
 import {
   finalizeSetup,
   getPublicOrigin,
@@ -88,14 +88,15 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
     });
 
     // Write the password hash into the credential table
-    const hashedPassword = await passwordHash(password);
-    const credId = generateSessionId().slice(0, 43);
+    const HASH_ROUNDS = 12; // bcrypt cost factor
+    const hashedPassword = await bcryptjs.hash(password, HASH_ROUNDS);
+    const credId = crypto.randomUUID();
 
     await adapter.createCredential({
       id: credId,
       userId: user.id,
       publicKey: new TextEncoder().encode(hashedPassword),
-      algorithm: 1, // BCrypt password hash (credential storage only, not a COSE algorithm)
+      algorithm: 1, // password hash (not a COSE algorithm)
       counter: 0,
       deviceType: "singleDevice",
       backedUp: false,
