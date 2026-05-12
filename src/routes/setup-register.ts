@@ -1,25 +1,21 @@
 /**
  * Setup wizard route: register a new admin account via email/password.
  *
- * Accepts email, name, and password. Creates a User directly in the database,
- * stores a BCrypt password hash in the Credential table, and marks setup complete.
- * This is the "create admin account" step when a site has the password provider enabled.
+ * Replaces the existing passkey-first admin setup: creates a User directly
+ * in the database, stores a BCrypt password hash in the Credential table,
+ * and marks setup complete.
  *
  * POST /_emdash/api/setup/password-register
  * Body: { email, name, password }
- * Response: { user: { id, email } } (uses Astro's session.set + redirect for login)
+ * Response: { data: { success: true } } (uses Astro's session.set + redirect for login)
  */
 
 import type { APIRoute } from "astro";
 import bcryptjs from "bcryptjs";
-import {
-  finalizeSetup,
-  OptionsRepository,
-} from "emdash/api/route-utils";
 
 export const prerender = false;
 
-export const POST: APIRoute = async ({ request, locals, session, redirect }) => {
+export const POST: APIRoute = async ({ request, locals }) => {
   try {
     const { emdash } = locals;
 
@@ -54,17 +50,28 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    const db = emdash.db as import("kysely").Kysely<any>;
-    const now = new Date().toISOString();
+    const db = emdash.db as any;
 
     // First-user check — setup wizard can only create one admin
-    const options = new OptionsRepository(emdash.db);
-    const setupComplete = await options.get("emdash:setup_complete");
+    const optionsRepo = db.selectFrom("options").selectAll();
+    const options: any = await optionsRepo
+      .where("key", "=", "emdash:setup_complete")
+      .executeTakeFirst();
+    const setupComplete = options?.value === true || options?.value === "true";
 
-    if (setupComplete === true || setupComplete === "true") {
+    if (setupComplete) {
       return new Response(
         JSON.stringify({ error: "Setup is already complete. Please use an existing account or contact the admin." }),
         { status: 403, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    // Check user count
+    const userCount = await db.selectFrom("users").selectAll().executeTakeFirst();
+    if (userCount) {
+      return new Response(
+        JSON.stringify({ error: "Admin user already exists" }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
       );
     }
 
@@ -74,6 +81,7 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
 
     // Insert user directly into the users table (no @emdash-cms/auth dependency)
     const userId = crypto.randomUUID();
+    const now = new Date().toISOString();
     await db
       .insertInto("users")
       .values({
@@ -92,7 +100,7 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
 
     // Insert credential row with password hash
     const credId = crypto.randomUUID();
-    const insertData: any = {
+    const credentialInsertData: any = {
       id: credId,
       user_id: userId,
       public_key: new TextEncoder().encode(hashedPassword),
@@ -104,26 +112,49 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
       created_at: now,
       last_used_at: now,
     };
+
     // Only include algorithm if the column exists (added in migration 037)
-    const tableInfo = await db.selectFrom("sqlite_master").select("sql").where("name", "=", "credentials").executeTakeFirst();
+    const tableInfo = await db.selectFrom("sqlite_master").selectAll().where("name", "=", "credentials").executeTakeFirst();
     if (tableInfo?.sql?.includes("algorithm")) {
-      insertData.algorithm = 1; // password hash (not a COSE algorithm)
+      credentialInsertData.algorithm = "password" as any;
     }
-    await db
-      .insertInto("credentials")
-      .values(insertData)
-      .executeTakeFirst();
+
+    await db.insertInto("credentials").values(credentialInsertData).executeTakeFirst();
 
     // Mark setup complete
-    await finalizeSetup(emdash.db);
+    const existingState = await db.selectFrom("options").selectAll()
+      .where("key", "=", "emdash:setup_state")
+      .executeTakeFirst();
+    const existingStateVal = existingState?.value ? JSON.parse(existingState.value) : null;
+
+    await db
+      .deleteFrom("options")
+      .where("key", "in", ["emdash:setup_complete", "emdash:setup_state"])
+      .execute();
+
+    await db.insertInto("options").values([
+      { key: "emdash:setup_complete", value: "true", created_at: now },
+      {
+        key: "emdash:setup_state",
+        value: JSON.stringify({
+          ...existingStateVal,
+          step: "complete",
+          adminEmail: normalizedEmail,
+          adminUserId: userId,
+        }),
+        created_at: now,
+      },
+    ]).execute();
+
     console.log(`[password-auth] Setup complete: created admin user via password (${normalizedEmail})`);
 
-    // Create Astro session
-    if (session) {
-      session.set("user", { id: userId, email: normalizedEmail });
-    }
-
-    return redirect("/_emdash/admin");
+    // Return JSON response for the SetupWizard API
+    return new Response(
+      JSON.stringify({
+        success: true,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
   } catch (error) {
     console.error("[password-register] Error:", error);
     return new Response(

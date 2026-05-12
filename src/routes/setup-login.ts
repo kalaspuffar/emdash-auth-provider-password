@@ -19,7 +19,10 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
     const { emdash } = locals;
 
     if (!emdash?.db) {
-      return redirect("/_emdash/admin/login?error=server_error&message=Database not configured");
+      return new Response(
+        JSON.stringify({ error: "Database not configured" }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
     }
 
     const body = await request.json();
@@ -40,12 +43,18 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
       .executeTakeFirst();
 
     if (!user) {
-      return redirect("/_emdash/admin/login?error=invalid_credentials&message=Invalid email or password");
+      return new Response(
+        JSON.stringify({ error: "Invalid email or password" }),
+        { status: 401, headers: { "Content-Type": "application/json" } },
+      );
     }
 
     // Check disabled
     if (user.disabled !== 0) {
-      return redirect("/_emdash/admin/login?error=account_disabled&message=Account disabled");
+      return new Response(
+        JSON.stringify({ error: "Account disabled" }),
+        { status: 403, headers: { "Content-Type": "application/json" } },
+      );
     }
 
     // Find password credential
@@ -57,9 +66,9 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
       .executeTakeFirst();
 
     if (!credentials) {
-      return redirect(
-        "/_emdash/admin/login?error=invalid_credentials&message=" +
-        encodeURIComponent("This account does not have a password set. Please use passkey or contact the admin."),
+      return new Response(
+        JSON.stringify({ error: "This account does not have a password set. Please use passkey or contact the admin." }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
       );
     }
 
@@ -68,7 +77,10 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
     const isValid = await bcryptjs.compare(password, storedHash);
 
     if (!isValid) {
-      return redirect("/_emdash/admin/login?error=invalid_credentials&message=Invalid email or password");
+      return new Response(
+        JSON.stringify({ error: "Invalid email or password" }),
+        { status: 401, headers: { "Content-Type": "application/json" } },
+      );
     }
 
     // Update last_used_at on credential
@@ -85,9 +97,17 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
       session.set("user", { id: user.id });
     }
 
-    return redirect("/_emdash/admin");
+    // Return JSON for the frontend — SetupWizard reads the response then redirects.
+    // The redirect can't be server-side because the wizard's fetch() won't follow it.
+    return new Response(
+      JSON.stringify({ success: true }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
   } catch (error) {
     console.error("[password-login] Error:", error);
-    return redirect("/_emdash/admin/login?error=server_error&message=Internal server error");
+    return new Response(
+      JSON.stringify({ error: "Internal server error" }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    );
   }
 };
