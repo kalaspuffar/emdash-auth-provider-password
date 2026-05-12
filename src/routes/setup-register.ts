@@ -143,8 +143,6 @@ export const POST: APIRoute = async ({ request, locals }) => {
       ])
       .onConflict((oc) => oc.column("name").doUpdateSet({ value: oc.new("value") }))
       .execute();
-      },
-    ]).execute();
 
     console.log(`[password-auth] Setup complete: created admin user via password (${normalizedEmail})`);
 
