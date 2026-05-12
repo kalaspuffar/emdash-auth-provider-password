@@ -10,8 +10,6 @@
  */
 
 import type { APIRoute } from "astro";
-
-import { createKyselyAdapter } from "@emdash-cms/auth/adapters/kysely";
 import bcryptjs from "bcryptjs";
 
 export const prerender = false;
@@ -32,26 +30,33 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    const adapter = createKyselyAdapter(emdash.db);
+    const db = emdash.db as any;
 
     // Find user by email
-    const user = await adapter.getUserByEmail(normalizedEmail);
+    const user = await db
+      .selectFrom("users")
+      .where("email", "=", normalizedEmail)
+      .selectAll()
+      .executeTakeFirst();
+
     if (!user) {
       return redirect("/_emdash/admin/login?error=invalid_credentials&message=Invalid email or password");
     }
 
     // Check disabled
-    if (user.disabled) {
+    if (user.disabled !== 0) {
       return redirect("/_emdash/admin/login?error=account_disabled&message=Account disabled");
     }
 
     // Find password credential
-    const credentials = await adapter.getCredentialsByUserId(user.id);
-    const passwordCred = credentials.find(
-      (c) => c.name === "password",
-    );
+    const credentials = await db
+      .selectFrom("credentials")
+      .where("user_id", "=", user.id)
+      .where("name", "=", "password")
+      .selectAll()
+      .executeTakeFirst();
 
-    if (!passwordCred) {
+    if (!credentials) {
       return redirect(
         "/_emdash/admin/login?error=invalid_credentials&message=" +
         encodeURIComponent("This account does not have a password set. Please use passkey or contact the admin."),
@@ -59,15 +64,21 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
     }
 
     // Decode and verify password
-    const storedHash = new TextDecoder().decode(passwordCred.publicKey);
+    const storedHash = new TextDecoder().decode(credentials.public_key as Uint8Array);
     const isValid = await bcryptjs.compare(password, storedHash);
 
     if (!isValid) {
       return redirect("/_emdash/admin/login?error=invalid_credentials&message=Invalid email or password");
     }
 
-    // Mark credential used (increments counter + updates lastUsedAt)
-    await adapter.updateCredentialCounter(passwordCred.id, passwordCred.counter + 1);
+    // Update last_used_at on credential
+    if (credentials.id) {
+      await db
+        .updateTable("credentials")
+        .set({ last_used_at: new Date().toISOString() })
+        .where("id", "=", credentials.id)
+        .executeTakeFirst();
+    }
 
     // Create Astro session
     if (session) {

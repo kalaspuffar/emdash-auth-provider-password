@@ -11,13 +11,9 @@
  */
 
 import type { APIRoute } from "astro";
-
-import { findOrCreateOAuthUser, Role } from "@emdash-cms/auth";
-import { createKyselyAdapter } from "@emdash-cms/auth/adapters/kysely";
 import bcryptjs from "bcryptjs";
 import {
   finalizeSetup,
-  getPublicOrigin,
   OptionsRepository,
 } from "emdash/api/route-utils";
 
@@ -58,7 +54,8 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    const adapter = createKyselyAdapter(emdash.db);
+    const db = emdash.db as import("kysely").Kysely<any>;
+    const now = new Date().toISOString();
 
     // First-user check — setup wizard can only create one admin
     const options = new OptionsRepository(emdash.db);
@@ -71,38 +68,46 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
       );
     }
 
-    const isFirstUser = true;
-
-    // Build password profile
-    const profile = {
-      id: "password",
-      email: normalizedEmail,
-      name: name || normalizedEmail.split("@")[0],
-      avatarUrl: null,
-      emailVerified: true,
-    };
-
-    // Use shared find-or-create
-    const user = await findOrCreateOAuthUser(adapter, "password", profile, async () => {
-      return { allowed: true, role: Role.ADMIN };
-    });
-
-    // Write the password hash into the credential table
-    const HASH_ROUNDS = 12; // bcrypt cost factor
+    // Hash password
+    const HASH_ROUNDS = 12;
     const hashedPassword = await bcryptjs.hash(password, HASH_ROUNDS);
-    const credId = crypto.randomUUID();
 
-    await adapter.createCredential({
-      id: credId,
-      userId: user.id,
-      publicKey: new TextEncoder().encode(hashedPassword),
-      algorithm: 1, // password hash (not a COSE algorithm)
-      counter: 0,
-      deviceType: "singleDevice",
-      backedUp: false,
-      transports: [],
-      name: "password",
-    });
+    // Insert user directly into the users table (no @emdash-cms/auth dependency)
+    const userId = crypto.randomUUID();
+    await db
+      .insertInto("users")
+      .values({
+        id: userId,
+        email: normalizedEmail,
+        name: name || normalizedEmail.split("@")[0],
+        avatar_url: null,
+        role: 50, // ADMIN
+        email_verified: 1,
+        disabled: 0,
+        data: "{}",
+        created_at: now,
+        updated_at: now,
+      })
+      .executeTakeFirst();
+
+    // Insert credential row with password hash
+    const credId = crypto.randomUUID();
+    await db
+      .insertInto("credentials")
+      .values({
+        id: credId,
+        user_id: userId,
+        public_key: new TextEncoder().encode(hashedPassword),
+        algorithm: 1, // password hash (not a COSE algorithm)
+        counter: 0,
+        device_type: "singleDevice",
+        backed_up: 0,
+        transports: null,
+        name: "password",
+        created_at: now,
+        last_used_at: now,
+      })
+      .executeTakeFirst();
 
     // Mark setup complete
     await finalizeSetup(emdash.db);
@@ -110,7 +115,7 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
 
     // Create Astro session
     if (session) {
-      session.set("user", { id: user.id, email: normalizedEmail });
+      session.set("user", { id: userId, email: normalizedEmail });
     }
 
     return redirect("/_emdash/admin");

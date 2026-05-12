@@ -19,9 +19,10 @@
     "url": "https://github.com/kalaspuffar/emdash-auth-provider-password.git"
   },
   "peerDependencies": {
-    "@emdash-cms/auth": ">=0.11.1",
+    "astro": ">=5",
     "emdash": ">=0.11.1",
-    "@cloudflare/kumo": ">=1.0.0"
+    "@cloudflare/kumo": ">=1.0.0",
+    "react": ">=18"
   },
   "dependencies": {
     "bcryptjs": "^3.0.0"
