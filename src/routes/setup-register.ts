@@ -53,25 +53,19 @@ export const POST: APIRoute = async ({ request, locals }) => {
     const db = emdash.db as any;
 
     // First-user check — setup wizard can only create one admin
-    const optionsRepo = db.selectFrom("options").selectAll();
-    const options: any = await optionsRepo
-      .where("key", "=", "emdash:setup_complete")
+    const setupCompleteRow = await db.selectFrom("options")
+      .select("value")
+      .where("name", "=", "emdash:setup_complete")
       .executeTakeFirst();
-    const setupComplete = options?.value === true || options?.value === "true";
+    const setupCompleteRowValue = setupCompleteRow?.value;
+    const setupComplete = typeof setupCompleteRowValue === 'string'
+      ? setupCompleteRowValue === 'true'
+      : setupCompleteRowValue === true;
 
     if (setupComplete) {
       return new Response(
         JSON.stringify({ error: "Setup is already complete. Please use an existing account or contact the admin." }),
         { status: 403, headers: { "Content-Type": "application/json" } },
-      );
-    }
-
-    // Check user count
-    const userCount = await db.selectFrom("users").selectAll().executeTakeFirst();
-    if (userCount) {
-      return new Response(
-        JSON.stringify({ error: "Admin user already exists" }),
-        { status: 400, headers: { "Content-Type": "application/json" } },
       );
     }
 
@@ -100,7 +94,7 @@ export const POST: APIRoute = async ({ request, locals }) => {
 
     // Insert credential row with password hash
     const credId = crypto.randomUUID();
-    const credentialInsertData: any = {
+    const insertData: any = {
       id: credId,
       user_id: userId,
       public_key: new TextEncoder().encode(hashedPassword),
@@ -112,37 +106,43 @@ export const POST: APIRoute = async ({ request, locals }) => {
       created_at: now,
       last_used_at: now,
     };
-
     // Only include algorithm if the column exists (added in migration 037)
-    const tableInfo = await db.selectFrom("sqlite_master").selectAll().where("name", "=", "credentials").executeTakeFirst();
+    const tableInfo = await db.selectFrom("sqlite_master")
+      .select("sql")
+      .where("name", "=", "credentials")
+      .executeTakeFirst();
     if (tableInfo?.sql?.includes("algorithm")) {
-      credentialInsertData.algorithm = "password" as any;
+      insertData.algorithm = "password";
     }
-
-    await db.insertInto("credentials").values(credentialInsertData).executeTakeFirst();
+    await db
+      .insertInto("credentials")
+      .values(insertData)
+      .executeTakeFirst();
 
     // Mark setup complete
-    const existingState = await db.selectFrom("options").selectAll()
-      .where("key", "=", "emdash:setup_state")
+    const existingStateRow = await db.selectFrom("options")
+      .select("value")
+      .where("name", "=", "emdash:setup_state")
       .executeTakeFirst();
-    const existingStateVal = existingState?.value ? JSON.parse(existingState.value) : null;
+    const existingStateVal = existingStateRow?.value ? JSON.parse(existingStateRow.value) : null;
 
     await db
-      .deleteFrom("options")
-      .where("key", "in", ["emdash:setup_complete", "emdash:setup_state"])
+      .insertInto("options")
+      .values([
+        { name: "emdash:setup_complete", value: JSON.stringify(true), created_at: now },
+        {
+          name: "emdash:setup_state",
+          value: JSON.stringify({
+            ...existingStateVal,
+            step: "complete",
+            adminEmail: normalizedEmail,
+            adminUserId: userId,
+          }),
+          created_at: now,
+        },
+      ])
+      .onConflict((oc) => oc.column("name").doUpdateSet({ value: oc.new("value") }))
       .execute();
-
-    await db.insertInto("options").values([
-      { key: "emdash:setup_complete", value: "true", created_at: now },
-      {
-        key: "emdash:setup_state",
-        value: JSON.stringify({
-          ...existingStateVal,
-          step: "complete",
-          adminEmail: normalizedEmail,
-          adminUserId: userId,
-        }),
-        created_at: now,
       },
     ]).execute();
 
