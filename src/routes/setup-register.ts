@@ -92,21 +92,26 @@ export const POST: APIRoute = async ({ request, locals, session, redirect }) => 
 
     // Insert credential row with password hash
     const credId = crypto.randomUUID();
+    const insertData: any = {
+      id: credId,
+      user_id: userId,
+      public_key: new TextEncoder().encode(hashedPassword),
+      counter: 0,
+      device_type: "singleDevice",
+      backed_up: 0,
+      transports: null,
+      name: "password",
+      created_at: now,
+      last_used_at: now,
+    };
+    // Only include algorithm if the column exists (added in migration 037)
+    const tableInfo = await db.selectFrom("sqlite_master").select("sql").where("name", "=", "credentials").executeTakeFirst();
+    if (tableInfo?.sql?.includes("algorithm")) {
+      insertData.algorithm = 1; // password hash (not a COSE algorithm)
+    }
     await db
       .insertInto("credentials")
-      .values({
-        id: credId,
-        user_id: userId,
-        public_key: new TextEncoder().encode(hashedPassword),
-        algorithm: 1, // password hash (not a COSE algorithm)
-        counter: 0,
-        device_type: "singleDevice",
-        backed_up: 0,
-        transports: null,
-        name: "password",
-        created_at: now,
-        last_used_at: now,
-      })
+      .values(insertData)
       .executeTakeFirst();
 
     // Mark setup complete
